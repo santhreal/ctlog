@@ -1,0 +1,44 @@
+[package]
+name = "santh-ctlog"
+version = "0.1.2"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Canonical Certificate Transparency (crt.sh) client and name-extraction parser for Santh scanners - single source of truth for CT-log subdomain/origin discovery."
+readme = "README.md"
+keywords = ["ct-log", "crtsh", "subdomain", "security", "recon"]
+categories = ["network-programming", "parser-implementations"]
+authors = ["Santh Project <contact@santh.dev>"]
+repository = "https://github.com/santhreal/Santh"
+
+[dependencies]
+# The pure parse layer (parse_crtsh_* / crtsh_query_url) needs only
+# JSON deserialization + a defensive URL encoder, so consumers that
+# already own their transport stack (gossan's ScanClient + governor
+# rate-limiter, scald's retry/backoff client) pull zero async/HTTP
+# weight. reqwest/tokio/tracing arrive only behind `fetch`.
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+thiserror = "=2.0.18"
+
+# Optional bounded fetch layer (discover_subdomains_ct[_with]) for
+# consumers without their own crt.sh transport (wafrift, karyx). The
+# chunk-bounded read + timeout that wafrift hardened lives here so the
+# OOM/hang guard is shared, not re-derived per caller.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+tracing = { version = "0.1", optional = true }
+
+[features]
+default = []
+fetch = ["dep:reqwest", "dep:tokio", "dep:tracing"]
+
+[dev-dependencies]
+proptest = "=1.9.0"
+wiremock = "0.6"
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lib]
+name = "ctlog"
+path = "src/lib.rs"
