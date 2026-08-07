@@ -268,6 +268,43 @@ fn parse_subdomains_includes_apex_only_cert_subdomains() {
     let subs = parse_crtsh_subdomains(body, "example.com").unwrap();
     assert_eq!(subs, ["api.example.com"]);
 }
+#[test]
+fn cleans_input_domain_wildcard_and_dots() {
+    assert_eq!(clean_domain("  *.example.com.  "), "example.com");
+    assert_eq!(clean_domain(".sub.example.com"), "sub.example.com");
+    assert_eq!(clean_domain("example.com."), "example.com");
+}
+
+#[test]
+fn url_strips_leading_wildcard_from_input_domain() {
+    assert_eq!(
+        crtsh_query_url("*.example.com"),
+        "https://crt.sh/?q=%.example.com&output=json"
+    );
+    assert_eq!(
+        crtsh_apex_query_url("*.example.com"),
+        "https://crt.sh/?q=example.com&output=json"
+    );
+}
+
+#[test]
+fn parse_subdomains_excludes_apex_when_queried_with_wildcard_domain() {
+    let body = r#"[
+        {"name_value": "example.com"},
+        {"name_value": "api.example.com"}
+    ]"#;
+    let subs = parse_crtsh_subdomains(body, "*.example.com").unwrap();
+    assert_eq!(subs, ["api.example.com"]);
+}
+
+#[test]
+fn SAN_normalization_strips_trailing_dots() {
+    let body = r#"[
+        {"name_value": "api.example.com.\nwww.example.com."}
+    ]"#;
+    let names = parse_crtsh_hostnames(body).unwrap();
+    assert_eq!(names, ["api.example.com", "www.example.com"]);
+}
 
 // ── properties ──────────────────────────────────────────────────────────
 

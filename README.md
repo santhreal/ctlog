@@ -23,12 +23,17 @@ case-normalization (apex leaking into subdomain results).
   caller-supplied `reqwest::Client` so its connection pool / proxy / UA
   config are honored.
 
-```rust
+```rust,no_run
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
 // Pure parse over a body you already fetched + size-limited:
-let subs = ctlog::parse_crtsh_subdomains(&body, "example.com")?;
+let body = r#"[{"name_value": "api.example.com\n*.example.com"}]"#;
+let subs = ctlog::parse_crtsh_subdomains(body, "example.com")?;
 
 // Or let the fetch layer do the bounded round-trip (feature = "fetch"):
+#[cfg(feature = "fetch")]
 let subs = ctlog::discover_subdomains_ct("example.com").await?;
+# Ok(())
+# }
 ```
 
 ## Normalization contract

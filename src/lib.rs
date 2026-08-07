@@ -122,6 +122,17 @@ pub enum CtError {
     },
 }
 
+/// Clean an input domain by trimming whitespace, stripping leading wildcard labels
+/// (`*.` or `.`), and stripping trailing dots (`.`).
+#[inline]
+pub(crate) fn clean_domain(domain: &str) -> &str {
+    let trimmed = domain.trim();
+    let s = trimmed.strip_prefix("*.").unwrap_or(trimmed);
+    let s = s.strip_prefix('.').unwrap_or(s);
+    let s = s.strip_suffix('.').unwrap_or(s);
+    s
+}
+
 /// Build the canonical crt.sh JSON query URL for `domain`.
 ///
 /// Uses the SQL-`LIKE` wildcard prefix `%.` so the query returns every
@@ -140,7 +151,7 @@ pub enum CtError {
 pub fn crtsh_query_url(domain: &str) -> String {
     format!(
         "https://crt.sh/?q=%.{}&output=json",
-        urlencoding::encode(domain.trim())
+        urlencoding::encode(clean_domain(domain))
     )
 }
 
@@ -160,7 +171,7 @@ pub fn crtsh_query_url(domain: &str) -> String {
 pub fn crtsh_apex_query_url(domain: &str) -> String {
     format!(
         "https://crt.sh/?q={}&output=json",
-        urlencoding::encode(domain.trim())
+        urlencoding::encode(clean_domain(domain))
     )
 }
 
@@ -201,7 +212,8 @@ pub fn parse_crtsh_hostnames(body: &str) -> Result<Vec<String>, CtError> {
 /// assert_eq!(subs, ["api.example.com"]);
 /// ```
 pub fn parse_crtsh_subdomains(body: &str, domain: &str) -> Result<Vec<String>, CtError> {
-    let domain_lower = domain.trim().to_ascii_lowercase();
+    let cleaned = clean_domain(domain);
+    let domain_lower = cleaned.to_ascii_lowercase();
     let mut names = normalized_names(body)?;
     names.retain(|n| *n != domain_lower);
     Ok(names)
@@ -222,10 +234,9 @@ fn normalized_names(body: &str) -> Result<Vec<String>, CtError> {
             let trimmed = raw.trim();
             // Strip a single leading wildcard label so the concrete host under
             // it survives; an entry that is *only* `*.` collapses to empty.
-            let normalized = trimmed
-                .strip_prefix("*.")
-                .unwrap_or(trimmed)
-                .to_ascii_lowercase();
+            let s = trimmed.strip_prefix("*.").unwrap_or(trimmed);
+            let s = s.strip_suffix('.').unwrap_or(s);
+            let normalized = s.to_ascii_lowercase();
             // Drop anything that can never be a DNS name: empties, residual
             // wildcards, and names with interior whitespace or control
             // characters. A hostile or misbehaving CT mirror can pack junk
@@ -350,13 +361,14 @@ mod fetch_impl {
         domain: &str,
         options: CtOptions,
     ) -> Result<Vec<String>, CtError> {
+        let clean = super::clean_domain(domain);
         let base = options.base_url.trim_end_matches('/');
-        let encoded = urlencoding::encode(domain.trim());
+        let encoded = urlencoding::encode(clean);
         let wildcard_url = format!("{base}/?q=%.{encoded}&output=json");
         let apex_url = format!("{base}/?q={encoded}&output=json");
 
-        let mut names = discover_subdomains_ct_with_url(client, &wildcard_url, domain, &options).await?;
-        let mut apex_names = discover_subdomains_ct_with_url(client, &apex_url, domain, &options).await?;
+        let mut names = discover_subdomains_ct_with_url(client, &wildcard_url, clean, &options).await?;
+        let mut apex_names = discover_subdomains_ct_with_url(client, &apex_url, clean, &options).await?;
         names.append(&mut apex_names);
         names.sort_unstable();
         names.dedup();
