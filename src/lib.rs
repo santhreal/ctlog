@@ -126,11 +126,11 @@ pub enum CtError {
 /// (`*.` or `.`), and stripping trailing dots (`.`).
 #[inline]
 pub(crate) fn clean_domain(domain: &str) -> &str {
-    let trimmed = domain.trim();
-    let s = trimmed.strip_prefix("*.").unwrap_or(trimmed);
-    let s = s.strip_prefix('.').unwrap_or(s);
-    let s = s.strip_suffix('.').unwrap_or(s);
-    s
+    let mut s = domain.trim();
+    while let Some(rest) = s.strip_prefix("*.") {
+        s = rest;
+    }
+    s.trim_matches('.')
 }
 
 /// Build the canonical crt.sh JSON query URL for `domain`.
@@ -221,6 +221,10 @@ pub fn parse_crtsh_subdomains(body: &str, domain: &str) -> Result<Vec<String>, C
 
 /// The shared normalization core behind both public parse functions.
 fn normalized_names(body: &str) -> Result<Vec<String>, CtError> {
+    if body.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
     let entries: Vec<CrtShEntry> = serde_json::from_str(body)?;
 
     // Push directly into the result. The previous `flat_map` collected each
@@ -232,21 +236,25 @@ fn normalized_names(body: &str) -> Result<Vec<String>, CtError> {
     for e in entries {
         for raw in e.name_value.split('\n') {
             let trimmed = raw.trim();
-            // Strip a single leading wildcard label so the concrete host under
-            // it survives; an entry that is *only* `*.` collapses to empty.
-            let s = trimmed.strip_prefix("*.").unwrap_or(trimmed);
-            let s = s.strip_suffix('.').unwrap_or(s);
+            // Strip any leading wildcard labels and surrounding dots.
+            let mut s = trimmed;
+            while let Some(rest) = s.strip_prefix("*.") {
+                s = rest;
+            }
+            let s = s.trim_matches('.');
             let normalized = s.to_ascii_lowercase();
+
             // Drop anything that can never be a DNS name: empties, residual
-            // wildcards, and names with interior whitespace or control
-            // characters. A hostile or misbehaving CT mirror can pack junk
-            // (spaces, tabs, ANSI escapes) into `name_value`; without this
-            // filter that junk flows into target lists downstream.
+            // wildcards, consecutive dots, whitespace, control characters, and
+            // invalid hostname symbols (URL schemes, paths, credentials, etc.).
             if !normalized.is_empty()
                 && !normalized.contains('*')
-                && !normalized
-                    .chars()
-                    .any(|c| c.is_whitespace() || c.is_control())
+                && !normalized.contains("..")
+                && !normalized.chars().any(|c| {
+                    c.is_whitespace()
+                        || c.is_control()
+                        || (!c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_')
+                })
             {
                 names.push(normalized);
             }
@@ -362,17 +370,35 @@ mod fetch_impl {
         options: CtOptions,
     ) -> Result<Vec<String>, CtError> {
         let clean = super::clean_domain(domain);
+        if clean.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let base = options.base_url.trim_end_matches('/');
         let encoded = urlencoding::encode(clean);
         let wildcard_url = format!("{base}/?q=%.{encoded}&output=json");
         let apex_url = format!("{base}/?q={encoded}&output=json");
 
-        let mut names = discover_subdomains_ct_with_url(client, &wildcard_url, clean, &options).await?;
-        let mut apex_names = discover_subdomains_ct_with_url(client, &apex_url, clean, &options).await?;
-        names.append(&mut apex_names);
-        names.sort_unstable();
-        names.dedup();
-        Ok(names)
+        let wildcard_res = discover_subdomains_ct_with_url(client, &wildcard_url, clean, &options).await;
+        let apex_res = discover_subdomains_ct_with_url(client, &apex_url, clean, &options).await;
+
+        match (wildcard_res, apex_res) {
+            (Ok(mut names), Ok(mut apex_names)) => {
+                names.append(&mut apex_names);
+                names.sort_unstable();
+                names.dedup();
+                Ok(names)
+            }
+            (Ok(names), Err(e)) => {
+                tracing::warn!(domain, error = %e, "apex query failed, returning wildcard results");
+                Ok(names)
+            }
+            (Err(e), Ok(apex_names)) => {
+                tracing::warn!(domain, error = %e, "wildcard query failed, returning apex results");
+                Ok(apex_names)
+            }
+            (Err(e1), Err(_)) => Err(e1),
+        }
     }
 
     /// Internal test seam: query an explicit `url` so `fetch` tests can
@@ -438,6 +464,16 @@ mod fetch_impl {
                 "CT response contained invalid UTF-8: {e}"
             )))
         })?;
+
+        // crt.sh and upstream proxies (Cloudflare, nginx) frequently emit 200 OK
+        // status headers with HTML timeout or error pages (e.g. Gateway Time-out).
+        // Catch HTML responses early and surface as SERVICE_UNAVAILABLE so the
+        // caller's retry loop is triggered rather than failing immediately on JSON parse.
+        let trimmed_text = text.trim_start();
+        if trimmed_text.starts_with('<') {
+            return Err(CtError::BadStatus(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        }
+
         let names = parse_crtsh_subdomains(&text, domain)?;
         tracing::debug!(found = names.len(), "discovered subdomains via CT logs");
         Ok(names)

@@ -5,8 +5,15 @@ All notable changes to `santh-ctlog` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.4] - 2026-08-07
 
+### Fixed
+- Multi-label wildcard/dot input cleaning: `clean_domain` iteratively strips multiple leading `*.` prefixes and leading/trailing dots (e.g. `*.*.example.com..` -> `example.com`).
+- SAN normalization hardening: `normalized_names` iteratively strips all leading `*.` prefixes and surrounding dots, drops empty/dot-only strings (`..`, `.`), filters consecutive interior dots (`..`), handles empty/whitespace bodies, and drops hostnames with invalid characters/schemes (`http://`, `user@`, `:port`, `/path`).
+- HTML 200 OK gateway timeout retry: Catch HTML error responses from crt.sh/proxies (body starting with `<`) in `try_query` and convert them to `CtError::BadStatus(SERVICE_UNAVAILABLE)` so the fetch retry loop executes instead of failing on JSON parse.
+- Empty domain short-circuit: `discover_subdomains_ct_with_options` returns an empty host vector immediately if `clean_domain(domain)` is empty, avoiding wasted queries `q=%.` and `q=`.
+- Partial query resilience: `discover_subdomains_ct_with_options` now succeeds and logs a warning if one query (wildcard or apex) succeeds while the other fails with a non-fatal error, returning discovered subdomains instead of failing completely.
+- Updated Cargo.toml author metadata strictly to `Santh <64453045+santhreal@users.noreply.github.com>`.
 ## [0.1.3] - 2026-08-07
 
 ### Fixed

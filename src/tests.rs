@@ -305,6 +305,32 @@ fn SAN_normalization_strips_trailing_dots() {
     let names = parse_crtsh_hostnames(body).unwrap();
     assert_eq!(names, ["api.example.com", "www.example.com"]);
 }
+#[test]
+fn cleans_domain_with_multiple_wildcards_and_dots() {
+    assert_eq!(clean_domain("*.*.example.com.."), "example.com");
+    assert_eq!(clean_domain("..sub.example.com."), "sub.example.com");
+    assert_eq!(clean_domain("*..example.com.."), "example.com");
+    assert_eq!(clean_domain("*."), "");
+    assert_eq!(clean_domain(".."), "");
+}
+
+#[test]
+fn san_normalization_handles_multiple_trailing_dots_and_invalid_chars() {
+    let body = r#"[
+        {"name_value": "api.example.com..\n..\nhttp://bad.example.com\nuser@example.com\nfoo..bar.example.com\napi.example.com:443"}
+    ]"#;
+    let names = parse_crtsh_hostnames(body).unwrap();
+    assert_eq!(names, ["api.example.com"]);
+}
+
+#[test]
+fn parse_handles_empty_body_and_whitespace() {
+    assert_eq!(parse_crtsh_hostnames("").unwrap(), Vec::<String>::new());
+    assert_eq!(
+        parse_crtsh_subdomains("   \n\t ", "example.com").unwrap(),
+        Vec::<String>::new()
+    );
+}
 
 // ── properties ──────────────────────────────────────────────────────────
 
@@ -528,6 +554,82 @@ mod fetch_tests {
         let names = discover_subdomains_ct_with_options(&client, "example.com", options)
             .await
             .expect("union of wildcard + apex queries should succeed");
+        assert_eq!(names, ["api.example.com"]);
+    }
+    #[tokio::test]
+    async fn retries_html_gateway_error_then_succeeds() {
+        let server = MockServer::start().await;
+        let body = sample_body();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let responder = move |_: &wiremock::Request| {
+            let n = attempts_clone.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                ResponseTemplate::new(200)
+                    .set_body_string("<html><head><title>504 Gateway Time-out</title></head></html>")
+            } else {
+                ResponseTemplate::new(200).set_body_string(body.clone())
+            }
+        };
+
+        Mock::given(method("GET")).and(path("/")).respond_with(responder).mount(&server).await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = format!("{}?q=%25.example.com&output=json", server.uri());
+        let names = discover_subdomains_ct_with_url(&client, &url, "example.com", &CtOptions::default())
+            .await
+            .expect("should retry HTML gateway 200 response and succeed");
+        assert_eq!(names, vec!["api.example.com"]);
+        assert!(attempts.load(Ordering::SeqCst) >= 3, "expected at least 3 attempts");
+    }
+
+    #[tokio::test]
+    async fn discover_subdomains_ct_empty_domain_short_circuits() {
+        let client = reqwest::Client::new();
+        let options = CtOptions::default();
+        let res = discover_subdomains_ct_with_options(&client, "  *.  ", options).await.unwrap();
+        assert!(res.is_empty(), "empty or wildcard-only domain should short-circuit to empty list");
+    }
+
+    #[tokio::test]
+    async fn fetch_resilient_to_partial_query_failure() {
+        let server = MockServer::start().await;
+
+        // Wildcard query succeeds with api.example.com
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("q", "%.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"[
+                {"name_value": "api.example.com"}
+            ]"#))
+            .mount(&server)
+            .await;
+
+        // Apex query fails with 502
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("q", "example.com"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let options = CtOptions {
+            base_url: server.uri(),
+            ..CtOptions::default()
+        };
+
+        let names = discover_subdomains_ct_with_options(&client, "example.com", options)
+            .await
+            .expect("should succeed with wildcard results even if apex query fails");
         assert_eq!(names, ["api.example.com"]);
     }
 
