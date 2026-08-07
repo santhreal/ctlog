@@ -127,10 +127,20 @@ pub enum CtError {
 #[inline]
 pub(crate) fn clean_domain(domain: &str) -> &str {
     let mut s = domain.trim();
-    while let Some(rest) = s.strip_prefix("*.") {
-        s = rest;
+    loop {
+        let prev = s;
+        if let Some(rest) = s.strip_prefix("*.") {
+            s = rest;
+        }
+        if let Some(rest) = s.strip_prefix('*') {
+            s = rest;
+        }
+        s = s.trim_matches('.');
+        if s == prev {
+            break;
+        }
     }
-    s.trim_matches('.')
+    s
 }
 
 /// Build the canonical crt.sh JSON query URL for `domain`.
@@ -466,11 +476,12 @@ mod fetch_impl {
         })?;
 
         // crt.sh and upstream proxies (Cloudflare, nginx) frequently emit 200 OK
-        // status headers with HTML timeout or error pages (e.g. Gateway Time-out).
-        // Catch HTML responses early and surface as SERVICE_UNAVAILABLE so the
+        // status headers with HTML, JSON error objects, or plain text error pages
+        // (e.g. Gateway Time-out or {"error": "..."}).
+        // Catch non-array responses early and surface as SERVICE_UNAVAILABLE so the
         // caller's retry loop is triggered rather than failing immediately on JSON parse.
         let trimmed_text = text.trim_start();
-        if trimmed_text.starts_with('<') {
+        if !trimmed_text.is_empty() && !trimmed_text.starts_with('[') {
             return Err(CtError::BadStatus(reqwest::StatusCode::SERVICE_UNAVAILABLE));
         }
 

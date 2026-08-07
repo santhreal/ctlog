@@ -5,6 +5,12 @@ All notable changes to `santh-ctlog` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-07
+
+### Fixed
+- Non-array 200 OK response retry: `try_query` now catches 200 OK responses from crt.sh/proxies whose bodies are not JSON arrays (such as JSON error objects `{"error": "..."}` or plain text error pages) and surfaces them as `CtError::BadStatus(SERVICE_UNAVAILABLE)` so the fetch retry loop executes instead of failing immediately on JSON parse.
+- Iterative `clean_domain` wildcard stripping: `clean_domain` now iteratively strips leading `*` and `*.` wildcards as well as leading/trailing dots (e.g. `***.example.com` -> `example.com`).
+
 ## [0.1.4] - 2026-08-07
 
 ### Fixed
