@@ -334,6 +334,15 @@ fn parse_handles_empty_body_and_whitespace() {
     );
 }
 
+#[test]
+fn san_normalization_strips_leading_dot_wildcards_and_asterisks() {
+    let body = r#"[
+        {"name_value": ".*.api.example.com\n*web.example.com\n***cdn.example.com\n*.*.app.example.com."}
+    ]"#;
+    let names = parse_crtsh_hostnames(body).unwrap();
+    assert_eq!(names, ["api.example.com", "app.example.com", "cdn.example.com", "web.example.com"]);
+}
+
 // ── properties ──────────────────────────────────────────────────────────
 
 proptest! {
@@ -663,6 +672,66 @@ mod fetch_tests {
             .await
             .expect("should succeed with wildcard results even if apex query fails");
         assert_eq!(names, ["api.example.com"]);
+    }
+
+    #[tokio::test]
+    async fn retries_empty_body_200_ok_response_then_succeeds() {
+        let server = MockServer::start().await;
+        let body = sample_body();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let responder = move |_: &wiremock::Request| {
+            let n = attempts_clone.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                ResponseTemplate::new(200).set_body_string("   ")
+            } else {
+                ResponseTemplate::new(200).set_body_string(body.clone())
+            }
+        };
+
+        Mock::given(method("GET")).and(path("/")).respond_with(responder).mount(&server).await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = format!("{}?q=%25.example.com&output=json", server.uri());
+        let names = discover_subdomains_ct_with_url(&client, &url, "example.com", &CtOptions::default())
+            .await
+            .expect("should retry empty body 200 response and succeed");
+        assert_eq!(names, vec!["api.example.com"]);
+        assert!(attempts.load(Ordering::SeqCst) >= 3, "expected at least 3 attempts");
+    }
+
+    #[tokio::test]
+    async fn retries_408_request_timeout_then_succeeds() {
+        let server = MockServer::start().await;
+        let body = sample_body();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let responder = move |_: &wiremock::Request| {
+            let n = attempts_clone.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                ResponseTemplate::new(408)
+            } else {
+                ResponseTemplate::new(200).set_body_string(body.clone())
+            }
+        };
+
+        Mock::given(method("GET")).and(path("/")).respond_with(responder).mount(&server).await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = format!("{}?q=%25.example.com&output=json", server.uri());
+        let names = discover_subdomains_ct_with_url(&client, &url, "example.com", &CtOptions::default())
+            .await
+            .expect("should retry 408 request timeout and succeed");
+        assert_eq!(names, vec!["api.example.com"]);
+        assert!(attempts.load(Ordering::SeqCst) >= 3, "expected at least 3 attempts");
     }
 
 }

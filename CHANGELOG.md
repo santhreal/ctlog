@@ -5,6 +5,12 @@ All notable changes to `santh-ctlog` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-07
+### Fixed
+- Empty/whitespace 200 OK body retry: `try_query` now catches empty bodies (`""` or `" "`) returned under HTTP 200 OK status by gateways/proxies and surfaces them as `CtError::BadStatus(SERVICE_UNAVAILABLE)`, triggering the fetch retry loop instead of silently returning an empty subdomain list `Ok([])`.
+- HTTP 408 Request Timeout retry: `is_retryable` now marks `StatusCode::REQUEST_TIMEOUT` (408) as a retryable transient error in the fetch retry loop.
+- SAN wildcard and dot normalization loop: `normalized_names` now uses an iterative cleaning loop matching `clean_domain` to strip leading asterisks, wildcard labels, and surrounding dots (e.g. `.*.api.example.com` -> `api.example.com`).
+
 ## [0.1.5] - 2026-08-07
 
 ### Fixed

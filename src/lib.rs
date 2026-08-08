@@ -248,10 +248,19 @@ fn normalized_names(body: &str) -> Result<Vec<String>, CtError> {
             let trimmed = raw.trim();
             // Strip any leading wildcard labels and surrounding dots.
             let mut s = trimmed;
-            while let Some(rest) = s.strip_prefix("*.") {
-                s = rest;
+            loop {
+                let prev = s;
+                if let Some(rest) = s.strip_prefix("*.") {
+                    s = rest;
+                }
+                if let Some(rest) = s.strip_prefix('*') {
+                    s = rest;
+                }
+                s = s.trim_matches('.');
+                if s == prev {
+                    break;
+                }
             }
-            let s = s.trim_matches('.');
             let normalized = s.to_ascii_lowercase();
 
             // Drop anything that can never be a DNS name: empties, residual
@@ -481,7 +490,7 @@ mod fetch_impl {
         // Catch non-array responses early and surface as SERVICE_UNAVAILABLE so the
         // caller's retry loop is triggered rather than failing immediately on JSON parse.
         let trimmed_text = text.trim_start();
-        if !trimmed_text.is_empty() && !trimmed_text.starts_with('[') {
+        if !trimmed_text.starts_with('[') {
             return Err(CtError::BadStatus(reqwest::StatusCode::SERVICE_UNAVAILABLE));
         }
 
@@ -494,7 +503,9 @@ mod fetch_impl {
         match err {
             CtError::Transport(_) => true,
             CtError::BadStatus(status) => {
-                status.is_server_error() || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                status.is_server_error()
+                    || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || *status == reqwest::StatusCode::REQUEST_TIMEOUT
             }
             _ => false,
         }
